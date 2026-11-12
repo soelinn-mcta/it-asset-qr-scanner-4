@@ -1,0 +1,232 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- Disable local browser & CDN caching -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+
+  <title>IT Asset Tracker</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+      padding: 16px; 
+      background: var(--tg-theme-bg-color, #ffffff); 
+      color: var(--tg-theme-text-color, #000000); 
+    }
+    .btn { 
+      width: 100%; 
+      padding: 12px; 
+      background: var(--tg-theme-button-color, #0088cc); 
+      color: var(--tg-theme-button-text-color, #ffffff); 
+      border: none; 
+      border-radius: 8px; 
+      font-weight: bold; 
+      margin-top: 10px; 
+      cursor: pointer; 
+    }
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    input, select, textarea { 
+      width: 100%; 
+      padding: 10px; 
+      margin: 6px 0 12px 0; 
+      border: 1px solid #ccc; 
+      border-radius: 6px; 
+      box-sizing: border-box; 
+      background: var(--tg-theme-secondary-bg-color, #f4f4f5);
+      color: var(--tg-theme-text-color, #000000);
+    }
+    .card { 
+      background: var(--tg-theme-secondary-bg-color, #f4f4f5); 
+      padding: 12px; 
+      border-radius: 8px; 
+      margin-bottom: 12px; 
+    }
+    .status-notice {
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 14px;
+      margin-bottom: 12px;
+      display: none;
+      font-weight: 500;
+    }
+    .notice-borrow { background-color: #e3f2fd; color: #0d47a1; border: 1px solid #bbdefb; }
+    .notice-return { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+  </style>
+</head>
+<body>
+  <h2>IT Asset Manager</h2>
+  
+  <button class="btn" onclick="openScanner()">Scan Asset QR Code</button>
+
+  <form id="assetForm" style="display:none; margin-top: 16px;" onsubmit="handleFormSubmit(event)">
+    <div class="card">
+      <label><b>Asset Tag:</b></label>
+      <input type="text" id="qrData" readonly required />
+    </div>
+
+    <!-- Live Dynamic Status Banner -->
+    <div id="statusNotice" class="status-notice"></div>
+
+    <label>Your Name:</label>
+    <input type="text" id="userName" placeholder="John Doe" required />
+
+    <label for="department">Department:</label>
+		<select id="department" name="department" required>
+			<option value="" selected disabled>Select department</option>
+			<option value="Admin">Admin</option>
+			<option value="HR">HR</option>
+			<option value="Operation">Operation</option>
+			<option value="M&E">M&E</option>
+			<option value="Estate">Estate</option>
+			<option value="Finance">Finance</option>
+			<option value="Business">Business</option>
+			<option value="Canteen">Canteen</option>
+			<option value="PE">PE</option>
+			<option value="ISD">ISD</option>
+			<option value="IT">IT</option>
+			<option value="Preschool-SC">Preschool-SC</option>
+			<option value="Lower Primary">Lower Primary</option>
+			<option value="Upper Primary">Upper Primary</option>
+			<option value="High School">High School</option>
+			<option value="CLT">CLT</option>
+			<option value="CLC">CLC</option>
+			<option value="FTC">FTC</option>
+			<option value="Chan Thar">Chan Thar</option>
+			<option value="Other Program">Other Program</option>
+		</select>
+
+    <label id="reasonLabel">Action / Reason / Return Condition:</label>
+    <textarea id="reason" rows="3" placeholder="State reason if borrowing OR condition if returning (e.g. Returned with charger)" required></textarea>
+
+    <button type="submit" class="btn" id="submitBtn">Submit Transaction</button>
+  </form>
+
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.expand();
+
+    // Primary Webhook Endpoint
+    const WEBHOOK_URL = "https://hook.us2.make.com/xt6vrgyah7ntpaw2d7oi8yiklsi6zvfc";
+
+    // Direct Webhook Request Handler
+    async function sendWebhookRequest(payload) {
+      const response = await fetch(WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`Webhook HTTP Error: ${response.status}`);
+      }
+
+      return response;
+    }
+
+    // Auto-fill user name from Telegram profile
+    if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
+      document.getElementById('userName').value = `${tg.initDataUnsafe.user.first_name || ''} ${tg.initDataUnsafe.user.last_name || ''}`.trim();
+    }
+
+    function openScanner() {
+      tg.showScanQrPopup({ text: "Align Asset QR code inside the frame" }, async function(qrString) {
+        const cleanQr = (qrString || "").trim();
+        document.getElementById('qrData').value = cleanQr;
+        tg.closeScanQrPopup();
+
+        // Perform live status lookup
+        await checkAssetStatus(cleanQr);
+        return true;
+      });
+    }
+
+    async function checkAssetStatus(qrTag) {
+      const notice = document.getElementById('statusNotice');
+      const submitBtn = document.getElementById('submitBtn');
+      const reasonField = document.getElementById('reason');
+
+      notice.className = "status-notice notice-borrow";
+      notice.style.display = "block";
+      notice.innerHTML = "⏳ <i>Checking asset status...</i>";
+      document.getElementById('assetForm').style.display = 'block';
+
+      try {
+        const response = await sendWebhookRequest({ action: "check", qrData: qrTag.trim() });
+        const data = await response.json();
+        console.log("Check Status Webhook Response:", data);
+
+        // Check directly if the asset is currently marked as BORROWED
+        const isBorrowed = (data.isBorrowed === true || data.isBorrowed === "true");
+        const borrower = (data.borrowerName && data.borrowerName.trim() !== "") ? data.borrowerName : "Current Borrower";
+
+        if (isBorrowed) {
+          // Asset is currently borrowed -> Show RETURN UI
+          tg.showAlert(
+            `⚠️ ITEM IS CURRENTLY BORROWED\n\nAsset "${qrTag}" is logged under "${borrower}".\n\nSubmitting will log a RETURN.`
+          );
+
+          notice.className = "status-notice notice-return";
+          notice.style.display = "block";
+          notice.innerHTML = `⚠️ <b>Currently Borrowed by ${borrower}</b>.<br>Submitting this form will log a <b>RETURN</b> to clear ${borrower}'s log.`;
+
+          reasonField.value = `Returned asset ${qrTag}`;
+          submitBtn.innerText = `RETURN for ${borrower}`;
+        } else {
+          // Asset is available -> Show BORROW UI
+          notice.className = "status-notice notice-borrow";
+          notice.style.display = "block";
+          notice.innerHTML = `🟢 <b>Item Available:</b> Submitting this form will log a <b>NEW BORROW</b>.`;
+
+          reasonField.value = "";
+          submitBtn.innerText = "BORROW";
+        }
+      } catch (err) {
+          console.error("Status check failed:", err);
+          notice.className = "status-notice notice-return";
+          notice.style.display = "block";
+          notice.innerHTML =
+          "❌ <b>Unable to check asset status.</b><br>" +
+          "Please try again. No transaction was submitted.";
+          submitBtn.disabled = true;
+          submitBtn.innerText = "Status Check Failed";
+      }
+    }
+
+    async function handleFormSubmit(e) {
+      e.preventDefault();
+      const submitBtn = document.getElementById('submitBtn');
+      submitBtn.disabled = true;
+      submitBtn.innerText = "Processing...";
+
+      const payload = {
+        action: "submit",
+        qrData: document.getElementById('qrData').value,
+        name: document.getElementById('userName').value,
+        department: document.getElementById('department').value,
+        reason: document.getElementById('reason').value,
+        telegramUsername: tg.initDataUnsafe?.user?.username || "Unknown"
+      };
+
+      try {
+        await sendWebhookRequest(payload);
+
+        tg.showAlert("Transaction successfully logged!", () => {
+          tg.close();
+        });
+      } catch (err) {
+        tg.showAlert("Submission failed. Please check your network and try again.");
+        submitBtn.disabled = false;
+        submitBtn.innerText = "Submit";
+      }
+    }
+  </script>
+</body>
+</html>
